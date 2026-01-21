@@ -5,6 +5,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 import io
 
+st.caption(f"🔎 Keys en secrets: {list(st.secrets.keys())}")
 st.set_page_config(page_title="Gestor OS", layout="centered")
 
 # ============================
