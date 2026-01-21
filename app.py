@@ -1,38 +1,85 @@
 
 import streamlit as st
-from pathlib import Path
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+import io
 
 st.set_page_config(page_title="Gestor OS", layout="centered")
 
-st.title("📂 Gestor de Documentación por Obra Social")
+# ============================
+# AUTH GOOGLE DRIVE
+# ============================
+def get_drive_service():
+    creds_info = st.secrets["google_credentials"]
+    creds = service_account.Credentials.from_service_account_info(
+        creds_info,
+        scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    return build("drive", "v3", credentials=creds)
 
-# ===========================================
-# SESSION STATE
-# ===========================================
-if "ruta_factura" not in st.session_state:
-    st.session_state.ruta_factura = None
+drive = get_drive_service()
+
+# ID de la carpeta raíz en Google Drive
+ROOT_FOLDER_NAME = "DOCUMENTACION_OS"
+
+# ============================
+# DRIVE HELPERS
+# ============================
+
+def search_folder(name, parent_id):
+    """Busca una carpeta por nombre dentro de otra carpeta."""
+    query = f"mimeType='application/vnd.google-apps.folder' and name='{name}' and '{parent_id}' in parents and trashed=false"
+    results = drive.files().list(q=query, fields="files(id, name)").execute()
+    files = results.get("files", [])
+    return files[0]["id"] if files else None
 
 
-# ===========================================
-# HELPERS
-# ===========================================
-def list_subdirs(path: Path):
-    if not path or not path.exists():
-        return []
-    return sorted([d.name for d in path.iterdir() if d.is_dir()], key=lambda x: x.lower())
+def create_folder(name, parent_id):
+    """Crea una carpeta y devuelve su ID."""
+    file_metadata = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder",
+        "parents": [parent_id]
+    }
+    folder = drive.files().create(body=file_metadata, fields="id").execute()
+    return folder["id"]
 
 
-MESES_ORDEN = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-               "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-ORDEN_MES = {m: i for i, m in enumerate(MESES_ORDEN)}
-
-def sort_meses(meses):
-    conocidos = [m for m in meses if m in ORDEN_MES]
-    otros = [m for m in meses if m not in ORDEN_MES]
-    return sorted(conocidos, key=lambda x: ORDEN_MES[x]) + sorted(otros)
+def list_subfolders(parent_id):
+    query = f"mimeType='application/vnd.google-apps.folder' and '{parent_id}' in parents and trashed=false"
+    results = drive.files().list(q=query, fields="files(id,name)").execute()
+    files = results.get("files", [])
+    return sorted(files, key=lambda f: f["name"].lower())
 
 
-# --- NORMALIZAR FACTURA ---
+def file_exists(name, parent_id):
+    query = f"name='{name}' and '{parent_id}' in parents and trashed=false"
+    results = drive.files().list(q=query, fields="files(id)").execute()
+    return len(results.get("files", [])) > 0
+
+
+def upload_file(uploaded_file, parent_id, save_name):
+    """Sube archivo si no existe."""
+    if file_exists(save_name, parent_id):
+        st.warning(f"⚠️ {save_name} ya existe. No se reemplazó.")
+        return
+
+    file_metadata = {"name": save_name, "parents": [parent_id]}
+
+    media = MediaIoBaseUpload(
+        io.BytesIO(uploaded_file.read()),
+        mimetype=uploaded_file.type,
+        resumable=True
+    )
+
+    drive.files().create(body=file_metadata, media_body=media, fields="id").execute()
+    st.success(f"✔ {save_name} subido correctamente.")
+
+
+# ============================
+# NORMALIZAR FACTURA
+# ============================
 def normalizar_factura(valor: str) -> str:
     valor = valor.strip()
 
@@ -51,103 +98,98 @@ def normalizar_factura(valor: str) -> str:
     else:
         parte1, parte2 = valor.split("_", 1)
 
-    parte1 = "".join([c for c in parte1 if c.isalnum()]).upper()
-    parte1 = parte1[:4].zfill(4)
-
-    parte2 = "".join([c for c in parte2 if c.isdigit()])
-    parte2 = parte2[:7].zfill(7)
+    parte1 = "".join([c for c in parte1 if c.isalnum()]).upper()[:4].zfill(4)
+    parte2 = "".join([c for c in parte2 if c.isdigit()])[:7].zfill(7)
 
     return f"{parte1}_{parte2}"
 
 
-# ===========================================
-# 1) DIRECTORIO BASE
-# ===========================================
-st.subheader("1️⃣ Seleccione el directorio base")
-directorio_base = st.text_input(
-    "Ruta del directorio:",
-    value=r"C:\Users\knunez\Streaming de Google Drive\Mi unidad"
-)
-base_path = Path(directorio_base) if directorio_base else None
+# ============================================================
+# 1) Obtener carpeta raíz DOCUMENTACION_OS
+# ============================================================
+def get_root_folder():
+    query = f"name='{ROOT_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    result = drive.files().list(q=query, fields="files(id)").execute()
+    files = result.get("files", [])
+    if not files:
+        st.error(f"No se encontró la carpeta raíz '{ROOT_FOLDER_NAME}'. Creala en tu Google Drive.")
+        st.stop()
+    return files[0]["id"]
 
+ROOT_ID = get_root_folder()
 
-# ===========================================
-# 2) OBRAS SOCIALES DESDE CARPETAS
-# ===========================================
-st.subheader("2️⃣ Seleccione la Obra Social")
-obras = list_subdirs(base_path) if base_path else []
+# ============================
+# APP UI
+# ============================
 
-obra_social = st.selectbox("Obra Social", options=obras) if obras else None
-ruta_os = base_path / obra_social if obra_social else None
+st.title("📂 Gestor de Documentación por Obra Social (Google Drive)")
 
+# 1) OBRAS SOCIALES
+st.subheader("1️⃣ Seleccione Obra Social")
+os_list = list_subfolders(ROOT_ID)
+os_names = [f["name"] for f in os_list]
 
-# ===========================================
-# 3) AÑO
-# ===========================================
-st.subheader("3️⃣ Año")
-anios = [d for d in list_subdirs(ruta_os) if d.startswith("Año ")] if ruta_os else []
-anio = st.selectbox("Año", options=anios) if anios else None
-ruta_anio = ruta_os / anio if anio else None
+obra_social = st.selectbox("Obra Social", os_names)
 
+OS_ID = search_folder(obra_social, ROOT_ID)
 
-# ===========================================
-# 4) MES
-# ===========================================
-st.subheader("4️⃣ Mes")
-meses = sort_meses(list_subdirs(ruta_anio)) if ruta_anio else []
-mes = st.selectbox("Mes", options=meses) if meses else None
-ruta_mes = ruta_anio / mes if mes else None
+# 2) Año
+st.subheader("2️⃣ Año")
+years = list_subfolders(OS_ID)
+year_names = [y["name"] for y in years]
 
+anio = st.selectbox("Año", year_names)
+ANIO_ID = search_folder(anio, OS_ID)
 
-# ===========================================
-# 5) PRESTACIÓN
-# ===========================================
-st.subheader("5️⃣ Tipo de prestación")
-prestaciones = list_subdirs(ruta_mes) if ruta_mes else []
-prestacion = st.selectbox("Prestación", options=prestaciones) if prestaciones else None
-ruta_prestacion = ruta_mes / prestacion if prestacion else None
+# 3) Mes
+st.subheader("3️⃣ Mes")
+meses = list_subfolders(ANIO_ID)
+mes_names = [m["name"] for m in meses]
 
+mes = st.selectbox("Mes", mes_names)
+MES_ID = search_folder(mes, ANIO_ID)
 
-# ===========================================
-# 6) NUMERO DE FACTURA
-# ===========================================
-st.subheader("6️⃣ Número de factura")
+# 4) Prestación
+st.subheader("4️⃣ Tipo de Prestación")
+prest = list_subfolders(MES_ID)
+prest_names = [p["name"] for p in prest]
 
-num_factura_raw = st.text_input("Número de factura (formato XXXX_XXXXXXX)")
-num_factura = normalizar_factura(num_factura_raw) if num_factura_raw else ""
+prestacion = st.selectbox("Prestación", prest_names)
+PRES_ID = search_folder(prestacion, MES_ID)
+
+# 5) Número de factura
+st.subheader("5️⃣ Número de Factura")
+num_raw = st.text_input("Formato XXXX_XXXXXXX")
+num_factura = normalizar_factura(num_raw) if num_raw else ""
 
 if num_factura:
-    st.success(f"Formato normalizado: **{num_factura}**")
+    st.success(f"Número normalizado: **{num_factura}**")
 
+# Crear carpeta factura
+if st.button("📁 Crear / Usar factura"):
 
+    # La carpeta puede o no existir
+    factura_id = search_folder(num_factura, PRES_ID)
 
-# ===========================================
-# 7) BOTÓN CREAR O TOMAR EXISTENTE
-# ===========================================
-if st.button("📁 Crear / Cargar estructura"):
-
-    if not all([ruta_prestacion, num_factura]):
-        st.error("⚠️ Complete todos los datos.")
+    if factura_id:
+        st.warning("⚠ La factura ya existía. Se usarán las carpetas existentes.")
     else:
-        ruta_factura = ruta_prestacion / num_factura
+        factura_id = create_folder(num_factura, PRES_ID)
+        create_folder("DOCUMENTACION_NO_OBLIGATORIA", factura_id)
+        st.success("✔ Estructura creada correctamente.")
 
-        if ruta_factura.exists():
-            st.warning("⚠️ La carpeta ya existía. Se utilizará para cargar archivos.")
-        else:
-            (ruta_factura / "DOCUMENTACION_NO_OBLIGATORIA").mkdir(parents=True, exist_ok=True)
-            st.success(f"✔️ Carpeta creada:\n{ruta_factura}")
-
-        st.session_state.ruta_factura = ruta_factura
+    st.session_state.factura_id = factura_id
 
 
+# ============================
+# SUBIR ARCHIVOS
+# ============================
 
-# ===========================================
-# 8) SUBIDA DE ARCHIVOS (SI YA EXISTE CARPETA)
-# ===========================================
-if st.session_state.ruta_factura:
+if "factura_id" in st.session_state:
 
-    ruta_factura = st.session_state.ruta_factura
-    st.markdown("### 📤 Subir documentación")
+    factura_id = st.session_state.factura_id
+
+    st.subheader("📤 Subir archivos")
 
     factura_pdf = st.file_uploader("Factura (PDF)", type=["pdf"])
     soporte = st.file_uploader("Soporte (XLS/XLSX)", type=["xls", "xlsx"])
@@ -156,54 +198,25 @@ if st.session_state.ruta_factura:
 
     if st.button("💾 Guardar archivos"):
 
-        # FACTURA
-        path_factura = ruta_factura / "FACTURA.pdf"
         if factura_pdf:
-            if path_factura.exists():
-                st.warning("⚠️ FACTURA.pdf ya existe. No se reemplazó.")
-            else:
-                with open(path_factura, "wb") as f:
-                    f.write(factura_pdf.read())
-                st.success("✔ FACTURA guardada.")
+            upload_file(factura_pdf, factura_id, "FACTURA.pdf")
 
-        # SOPORTE
         if soporte:
             ext = soporte.name.split(".")[-1]
-            path_soporte = ruta_factura / f"SOPORTE_FACTURA.{ext}"
+            upload_file(soporte, factura_id, f"SOPORTE_FACTURA.{ext}")
 
-            if path_soporte.exists():
-                st.warning("⚠️ SOPORTE_FACTURA ya existe. No se reemplazó.")
-            else:
-                with open(path_soporte, "wb") as f:
-                    f.write(soporte.read())
-                st.success("✔ SOPORTE guardado.")
-
-        # RENDICION
-        path_rendicion = ruta_factura / "RENDICION.pdf"
         if rendicion:
-            if path_rendicion.exists():
-                st.warning("⚠️ RENDICION.pdf ya existe. No se reemplazó.")
-            else:
-                with open(path_rendicion, "wb") as f:
-                    f.write(rendicion.read())
-                st.success("✔ RENDICION guardada.")
+            upload_file(rendicion, factura_id, "RENDICION.pdf")
 
-        # NO OBLIGATORIA
         if extra:
-            for file in extra:
-                path_extra = ruta_factura / "DOCUMENTACION_NO_OBLIGATORIA" / file.name
-                if path_extra.exists():
-                    st.warning(f"⚠️ {file.name} ya existe. No se reemplazó.")
-                else:
-                    with open(path_extra, "wb") as f:
-                        f.write(file.read())
-                    st.success(f"✔ {file.name} guardado.")
+            no_obl_id = search_folder("DOCUMENTACION_NO_OBLIGATORIA", factura_id)
+            for f in extra:
+                upload_file(f, no_obl_id, f.name)
 
 
-
-# ===========================================
+# ============================
 # FOOTER ANIMADO
-# ===========================================
+# ============================
 st.markdown("---")
 st.markdown("""
 <style>
