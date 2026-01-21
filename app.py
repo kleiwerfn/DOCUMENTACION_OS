@@ -5,6 +5,11 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 import io
 
+# === DEBUG SECRETS (quitar luego) ===
+st.caption(f"🔎 keys en secrets: {list(st.secrets.keys())}")
+st.caption(f"🔎 ROOT_FOLDER_ID (repr): {repr(st.secrets.get('ROOT_FOLDER_ID', None))}")
+
+
 st.set_page_config(page_title="Gestor OS", layout="centered")
 
 # ============================
