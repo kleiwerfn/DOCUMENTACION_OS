@@ -20,17 +20,19 @@ def get_drive_service():
 
 drive = get_drive_service()
 
-# ID de la carpeta raíz en Google Drive
-ROOT_FOLDER_NAME = "DOCUMENTACION_OS"
+# Usamos el ID de la carpeta raíz directamente desde secrets.toml
+ROOT_ID = st.secrets["ROOT_FOLDER_ID"]
 
 # ============================
 # DRIVE HELPERS
 # ============================
-
 def search_folder(name, parent_id):
     """Busca una carpeta por nombre dentro de otra carpeta."""
-    query = f"mimeType='application/vnd.google-apps.folder' and name='{name}' and '{parent_id}' in parents and trashed=false"
-    results = drive.files().list(q=query, fields="files(id, name)").execute()
+    query = (
+        f"mimeType='application/vnd.google-apps.folder' "
+        f"and name='{name}' and '{parent_id}' in parents and trashed=false"
+    )
+    results = drive.files().list(q=query, fields="files(id,name)").execute()
     files = results.get("files", [])
     return files[0]["id"] if files else None
 
@@ -47,7 +49,10 @@ def create_folder(name, parent_id):
 
 
 def list_subfolders(parent_id):
-    query = f"mimeType='application/vnd.google-apps.folder' and '{parent_id}' in parents and trashed=false"
+    query = (
+        f"mimeType='application/vnd.google-apps.folder' "
+        f"and '{parent_id}' in parents and trashed=false"
+    )
     results = drive.files().list(q=query, fields="files(id,name)").execute()
     files = results.get("files", [])
     return sorted(files, key=lambda f: f["name"].lower())
@@ -66,7 +71,6 @@ def upload_file(uploaded_file, parent_id, save_name):
         return
 
     file_metadata = {"name": save_name, "parents": [parent_id]}
-
     media = MediaIoBaseUpload(
         io.BytesIO(uploaded_file.read()),
         mimetype=uploaded_file.type,
@@ -82,7 +86,6 @@ def upload_file(uploaded_file, parent_id, save_name):
 # ============================
 def normalizar_factura(valor: str) -> str:
     valor = valor.strip()
-
     if "_" not in valor:
         if valor.isdigit():
             parte1 = ""
@@ -93,8 +96,7 @@ def normalizar_factura(valor: str) -> str:
                 parte1 = partes[0]
                 parte2 = ""
             else:
-                parte1 = partes[0]
-                parte2 = partes[1]
+                parte1, parte2 = partes[0], partes[1]
     else:
         parte1, parte2 = valor.split("_", 1)
 
@@ -104,31 +106,15 @@ def normalizar_factura(valor: str) -> str:
     return f"{parte1}_{parte2}"
 
 
-# ============================================================
-# 1) Obtener carpeta raíz DOCUMENTACION_OS
-# ============================================================
-def get_root_folder():
-    query = f"name='{ROOT_FOLDER_NAME}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-    result = drive.files().list(q=query, fields="files(id)").execute()
-    files = result.get("files", [])
-    if not files:
-        st.error(f"No se encontró la carpeta raíz '{ROOT_FOLDER_NAME}'. Creala en tu Google Drive.")
-        st.stop()
-    return files[0]["id"]
-
-ROOT_ID = get_root_folder()
-
 # ============================
-# APP UI
+# UI PRINCIPAL
 # ============================
-
 st.title("📂 Gestor de Documentación por Obra Social (Google Drive)")
 
 # 1) OBRAS SOCIALES
 st.subheader("1️⃣ Seleccione Obra Social")
 os_list = list_subfolders(ROOT_ID)
 os_names = [f["name"] for f in os_list]
-
 obra_social = st.selectbox("Obra Social", os_names)
 
 OS_ID = search_folder(obra_social, ROOT_ID)
@@ -137,27 +123,27 @@ OS_ID = search_folder(obra_social, ROOT_ID)
 st.subheader("2️⃣ Año")
 years = list_subfolders(OS_ID)
 year_names = [y["name"] for y in years]
-
 anio = st.selectbox("Año", year_names)
+
 ANIO_ID = search_folder(anio, OS_ID)
 
 # 3) Mes
 st.subheader("3️⃣ Mes")
 meses = list_subfolders(ANIO_ID)
 mes_names = [m["name"] for m in meses]
-
 mes = st.selectbox("Mes", mes_names)
+
 MES_ID = search_folder(mes, ANIO_ID)
 
 # 4) Prestación
 st.subheader("4️⃣ Tipo de Prestación")
 prest = list_subfolders(MES_ID)
 prest_names = [p["name"] for p in prest]
-
 prestacion = st.selectbox("Prestación", prest_names)
+
 PRES_ID = search_folder(prestacion, MES_ID)
 
-# 5) Número de factura
+# 5) Nº Factura
 st.subheader("5️⃣ Número de Factura")
 num_raw = st.text_input("Formato XXXX_XXXXXXX")
 num_factura = normalizar_factura(num_raw) if num_raw else ""
@@ -167,8 +153,6 @@ if num_factura:
 
 # Crear carpeta factura
 if st.button("📁 Crear / Usar factura"):
-
-    # La carpeta puede o no existir
     factura_id = search_folder(num_factura, PRES_ID)
 
     if factura_id:
@@ -176,28 +160,24 @@ if st.button("📁 Crear / Usar factura"):
     else:
         factura_id = create_folder(num_factura, PRES_ID)
         create_folder("DOCUMENTACION_NO_OBLIGATORIA", factura_id)
-        st.success("✔ Estructura creada correctamente.")
 
+    st.success("✔ Estructura creada correctamente.")
     st.session_state.factura_id = factura_id
 
 
 # ============================
 # SUBIR ARCHIVOS
 # ============================
-
 if "factura_id" in st.session_state:
-
     factura_id = st.session_state.factura_id
 
     st.subheader("📤 Subir archivos")
-
     factura_pdf = st.file_uploader("Factura (PDF)", type=["pdf"])
     soporte = st.file_uploader("Soporte (XLS/XLSX)", type=["xls", "xlsx"])
     rendicion = st.file_uploader("Rendición (PDF)", type=["pdf"])
     extra = st.file_uploader("Documentación NO obligatoria", accept_multiple_files=True)
 
     if st.button("💾 Guardar archivos"):
-
         if factura_pdf:
             upload_file(factura_pdf, factura_id, "FACTURA.pdf")
 
@@ -221,23 +201,22 @@ st.markdown("---")
 st.markdown("""
 <style>
 @keyframes spinZoom {
-0% { transform: rotate(0deg) scale(1); }
-50% { transform: rotate(180deg) scale(1.3); }
-100% { transform: rotate(360deg) scale(1); }
+    0% { transform: rotate(0deg) scale(1); }
+    50% { transform: rotate(180deg) scale(1.3); }
+    100% { transform: rotate(360deg) scale(1); }
 }
 .robot-icon {
-display: inline-block;
-animation: spinZoom 3s ease-in-out 4 forwards;
+    display: inline-block;
+    animation: spinZoom 3s ease-in-out 4 forwards;
 }
 .footer-text {
-text-align: center;
-color: #555;
-font-size: 0.95em;
-font-family: 'Segoe UI', sans-serif;
-margin-top: 20px;
+    text-align: center;
+    color: #555;
+    font-size: 0.95em;
+    font-family: 'Segoe UI', sans-serif;
+    margin-top: 20px;
 }
 </style>
-
 <div class="footer-text">
 <span class="robot-icon">🤖</span> <strong>Desarrollado por Kleiwerf Núñez</strong> <span class="robot-icon">🤖</span>
 </div>
