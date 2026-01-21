@@ -5,7 +5,6 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 import io
 
-st.caption(f"🔎 Keys en secrets: {list(st.secrets.keys())}")
 st.set_page_config(page_title="Gestor OS", layout="centered")
 
 # ============================
@@ -21,8 +20,21 @@ def get_drive_service():
 
 drive = get_drive_service()
 
-# Usamos el ID de la carpeta raíz directamente desde secrets.toml
-ROOT_ID = st.secrets["ROOT_FOLDER_ID"]
+# ============================
+# ROOT FOLDER ID (SEGURO)
+# ============================
+# Intentamos leer el ID desde secrets. Si no está, mostramos un error claro
+ROOT_FOLDER_ID = st.secrets.get("ROOT_FOLDER_ID", "").strip()
+
+if not ROOT_FOLDER_ID:
+    st.error(
+        "❌ Falta configurar `ROOT_FOLDER_ID` en *App settings → Secrets*.\n\n"
+        "Agregá una línea así:\n\n"
+        'ROOT_FOLDER_ID = "1f7E6ZMetMlpMf9NaY1Mjyd45nyzM8Q5o"'
+    )
+    st.stop()
+
+ROOT_ID = ROOT_FOLDER_ID
 
 # ============================
 # DRIVE HELPERS
